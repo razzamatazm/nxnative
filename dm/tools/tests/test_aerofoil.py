@@ -145,6 +145,14 @@ class Aerofoil(unittest.TestCase):
     def test_bad_password(self):
         with mock.patch.dict(os.environ, {'AEROFOIL_PASSWORD': 'nope'}), self.assertRaisesRegex(af.Error, 'login refused'): self.run_main(TID, '-y')
 
+    def test_build_options_go_to_the_build(self):   # build_ipa_from_nsp.py's options anywhere on the line, with their values; --keys and -h stay this script's
+        ours = {'--keys': 1, '-h': 1, '--build': 1}
+        self.assertEqual(af.split_build_options(['mario', 'wonder', '--build', '--platform', 'mac-app'], ours), (['mario', 'wonder', '--build'], ['--platform', 'mac-app']))
+        self.assertEqual(af.split_build_options(['--build', '--platform', 'mac-app', 'mario', '--no-show-fps', '-o=/x.app', '--keys', 'k'], ours),
+                         (['--build', 'mario', '--keys', 'k'], ['--platform', 'mac-app', '--no-show-fps', '-o=/x.app']))
+        self.assertEqual(af.split_build_options(['mario', '--bogus'], ours), (['mario', '--bogus'], []))   # neither script's: argparse rejects it
+        with redirect_stdout(io.StringIO()), mock.patch('sys.stderr', io.StringIO()), self.assertRaises(SystemExit): af.main(['mario', '--platform', 'mac-app'])   # without --build
+
     def test_library_outside_repo(self):
         self.assertEqual(af.check_library(Path.home() / 'Games'), (Path.home() / 'Games').resolve())
         with self.assertRaisesRegex(af.Error, 'inside the repository'): af.check_library(REPO / 'x')

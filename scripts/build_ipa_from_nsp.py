@@ -1592,6 +1592,11 @@ def find_repo(here):   # this file lives in the repository's scripts/; walk up t
 
 def parse_args(argv):
     """Command-line options: when given they override "Settings"; F5 in Spyder passes none, so "Settings" is used as is. -h shows the help"""
+    return arg_parser().parse_args(argv)
+
+
+def arg_parser():
+    """The options' parser (scripts/aerofoil.py --build reads it to pass this script's options on)"""
     import argparse
     ap = argparse.ArgumentParser(prog='build_ipa_from_nsp.py',
         description='Build an unsigned IPA or prepare an Xcode project from a game\'s NSPs; a game with no profile is surveyed and gets a provisional profile.',
@@ -1621,7 +1626,7 @@ def parse_args(argv):
     ap.add_argument('--no-heap-check', action='store_true', help='a provisional profile: skip the heap check on the Mac (the alias / heap split stays a guess)')
     ap.add_argument('--progress', choices=('auto', 'bar', 'lines', 'json', 'off'), help='stage lines on the console: bar = one line per stage, redrawn in place; lines = a plain line every BEAT seconds; json = newline-delimited JSON events (no prompts); off = only each stage\'s start and end '
                     '(default: the PROGRESS setting; auto = bar in a terminal or Spyder, lines when the output goes to a file or a pipe)')
-    return ap.parse_args(argv)
+    return ap
 
 
 def report_profile_status(g, reg, pkg_ver, derived, provisional, artifact='IPA'):

@@ -3,7 +3,7 @@
 #   python3 scripts/aerofoil.py zelda                 search, pick a number, download the base game, its newest update and every DLC into <library>/<name> [<title ID>]/
 #   python3 scripts/aerofoil.py 0100F2C0115B6000      a title ID (or a search with one match) is picked without asking
 #   python3 scripts/aerofoil.py zelda --list          only list the matches
-#   python3 scripts/aerofoil.py zelda --build         download, then run build_ipa_from_nsp.py on the folder (with the saved prod.keys; options after -- go to it: --build -- --platform mac)
+#   python3 scripts/aerofoil.py zelda --build         download, then run build_ipa_from_nsp.py on the folder (with the saved prod.keys; its options go to it: --build --platform mac-app)
 # The first run asks for the server URL, the user and the library folder (or give --server, --user, --library, --keys); they are saved in ~/.config/nxnative/aerofoil.json, the password in the
 #   macOS Keychain (service nxnative-aerofoil; AEROFOIL_PASSWORD overrides it). The library folder must be outside this repository.
 # Aerofoil's Tinfoil shop index is encrypted for Tinfoil by default, so this logs in as the web UI does (POST /login, then /api/titles, /api/title-details, /api/get_game/<id>?download=1).
@@ -267,6 +267,24 @@ def choose(games, query, pick, lib=None):
         if s.isdigit() and 1 <= int(s) <= len(games): return games[int(s) - 1]
 
 
+def split_build_options(argv, ours):
+    """argv without build_ipa_from_nsp.py's own options, and those options (with their values) for --build. An option this script also has (ours: -h, --keys) stays here;
+    one neither script has stays too, for argparse to reject"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('build_ipa_from_nsp', REPO / 'scripts/build_ipa_from_nsp.py')
+    nsp = importlib.util.module_from_spec(spec); spec.loader.exec_module(nsp)
+    theirs = nsp.arg_parser()._option_string_actions
+    keep, build, i = [], [], 0
+    while i < len(argv):
+        t = argv[i]; name = t.split('=', 1)[0]; act = theirs.get(name)
+        if t.startswith('-') and act and name not in ours:
+            build.append(t)
+            if act.nargs != 0 and '=' not in t and i + 1 < len(argv): build.append(argv[i + 1]); i += 1   # its value
+        else: keep.append(t)
+        i += 1
+    return keep, build
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     passthru = []
@@ -279,13 +297,16 @@ def main(argv=None):
     ap.add_argument('--no-update', action='store_true', help='leave out the update')
     ap.add_argument('--no-dlc', action='store_true', help='leave out the DLC')
     ap.add_argument('--dest', help='the folder for this game (default <library>/<name> [<title ID>])')
-    ap.add_argument('--build', action='store_true', help='run build_ipa_from_nsp.py on the folder afterwards (options after -- go to it)')
+    ap.add_argument('--build', action='store_true', help='run build_ipa_from_nsp.py on the folder afterwards; its options (--platform mac-app, -o, ...) go to it, as does everything after --')
     ap.add_argument('--server', help='Aerofoil URL, e.g. http://nas.local:8465 (saved)')
     ap.add_argument('--user', help='Aerofoil user (saved)')
     ap.add_argument('--library', help='folder the game folders go in (saved)')
     ap.add_argument('--keys', help='prod.keys for --build (its path is saved, never its contents)')
     ap.add_argument('--forget-password', action='store_true', help='remove the saved password from the Keychain and ask again')
+    argv, build = split_build_options(argv, ap._option_string_actions)
     a = ap.parse_args(argv)
+    passthru = build + passthru
+    if passthru and not a.build: ap.error(f'{" ".join(passthru)}: options of build_ipa_from_nsp.py, which only --build runs')
 
     cfg = load_config(); changed = False
     for k in ('server', 'user', 'library', 'keys'):
