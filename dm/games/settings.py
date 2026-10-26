@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # The iOS launcher's settings for one game, from settings.tsv (its header describes the columns): the rows whose condition holds for the game, with the game's defaults, as JSON.
-# build_ipa.sh writes it into the app as dm/launcher.json; Launcher.swift draws the screen from it (an app without the file starts the game at once).
+# build_ipa.sh writes it into the app as dm/launcher.json; Launcher.swift draws the screen from it (an app without the file starts the game at once). The Mac app (dm/mac/pack_app.py, DM_PACK_PLATFORM=mac)
+# carries it too: front_mac.m applies the saved choices when the host starts and draws its Settings window from it.
 # Usage: settings.py <game id> <rewritten modules dir> <control.nacp> <out.json>   (DM_GAMES_DIR finds provisional profiles, as in game.py; build:<VAR> defaults come from the environment)
 import json, os, re, sys
 from pathlib import Path
@@ -38,6 +39,7 @@ def build(gid, patched, control):
         if cond == 'languages>1': return len(langs) > 1
         if cond.startswith('fixups:'): return cond[7:] in keys
         if cond.startswith('gfxapi:'): return os.environ.get('GFXAPI', '') == cond[7:]
+        if cond.startswith('platform:'): return (os.environ.get('DM_PACK_PLATFORM') or 'ios') == cond[9:]
         m = re.fullmatch(r'(DM_GAME_\w+)(!=|==)(.*)', cond)
         if m: return (macro(m[1], n) == m[3]) == (m[2] == '==')
         sys.exit(f'settings.tsv:{n}: unknown condition {cond}')

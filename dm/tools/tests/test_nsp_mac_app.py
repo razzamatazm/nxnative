@@ -61,6 +61,7 @@ class App(unittest.TestCase):
         (t / 'font/nintendo_ext.ttf').write_bytes(b'ttf')
         (t / 'aoc/1/x').write_bytes(b'dlc')
         (t / 'env.txt').write_text('# baked in\nDM_BAKED=1\nDM_BOTH=bundle\n')
+        (t / 'launcher.json').write_text('{"game": "%s", "settings": []}\n' % TID)
         subprocess.run(['sips', '-s', 'format', 'jpeg', '-z', '256', '256', '/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericApplicationIcon.icns',
                         '--out', t / 'icon.jpg'], check=True, capture_output=True)
         (t / 'bin/osascript').write_text('#!/bin/sh\necho "$@" > "$HOME/alert.txt"\nprintf "%s\\0" "$@" > "$HOME/alert.args"\n'
@@ -68,7 +69,7 @@ class App(unittest.TestCase):
         (t / 'bin/osascript').chmod(0o755)
         cls.app = t / 'Game - Test.app'
         cls.args = pack_app.parse([str(cls.app), '--host', str(t / 'dmhost'), '--patched', str(t / 'patched'), '--romfs', str(t / 'romfs'), '--msl', str(t / 'cache/b-0123456789ab'),
-                                   '--tables', str(t / 'profile'), '--font', str(t / 'font'), '--aoc', str(t / 'aoc'), '--env-file', str(t / 'env.txt'), '--title-id', TID.lower(),
+                                   '--tables', str(t / 'profile'), '--font', str(t / 'font'), '--aoc', str(t / 'aoc'), '--env-file', str(t / 'env.txt'), '--settings', str(t / 'launcher.json'), '--title-id', TID.lower(),
                                    '--name', 'Game: Test', '--version', '1.0.1', '--lang', 'fr', '--marker', 'region_common/audio/edward.bfsar', '--icon', str(t / 'icon.jpg'),
                                    '--category', 'public.app-category.games'])
         with contextlib.redirect_stdout(io.StringIO()): pack_app.pack(cls.args)
@@ -93,7 +94,7 @@ class App(unittest.TestCase):
         self.assertFalse(self.app.with_name(self.app.name + '.partial').exists())
         self.assertEqual(sorted(p.name for p in (c / 'MacOS').iterdir()), ['dmhost', 'nxnative'])
         self.assertEqual(sorted(p.name for p in (c / 'Resources/dm').iterdir()),
-                         ['c1_full.tsv', 'env.txt', 'font', 'main.cuts.tsv', 'main.fixups.tsv', 'main.gates.tsv', 'main.obs.tsv', 'main.patched.bin', 'pso_manifest.tsv', 'shader_map.tsv'])
+                         ['c1_full.tsv', 'env.txt', 'font', 'launcher.json', 'main.cuts.tsv', 'main.fixups.tsv', 'main.gates.tsv', 'main.obs.tsv', 'main.patched.bin', 'pso_manifest.tsv', 'shader_map.tsv'])
         self.assertEqual([p.name for p in (c / 'Resources/msl').iterdir()], ['b-0123456789ab'])   # the libraries only, not the compile cache
         self.assertEqual((c / 'Resources/msl/b-0123456789ab/k_b.metallib').read_bytes(), b'lib')
         self.assertTrue((c / 'Resources/romfs/region_common/audio/edward.bfsar').is_file())
@@ -123,6 +124,7 @@ class App(unittest.TestCase):
         self.assertEqual((r['DM_SAVE'], r['DM_TEMP'], r['DM_ROOT'], r['cwd']), (str(sup / 'save'), str(sup / 'temp'), str(sup), str(sup)))   # pso_user.tsv goes beside save/
         self.assertEqual((r['DM_WINDOW'], r['DM_AUDIO'], r['DM_LANG']), ('1', '1', 'ja'))   # the caller's DM_LANG wins over the packed language
         self.assertEqual((r['DM_BAKED'], r['DM_BOTH']), ('1', 'player'))   # the player's env.txt before the bundle's
+        self.assertEqual(r['DM_ENV_FILE_KEYS'], 'DM_BOTH DM_BAKED')   # what the env files set, which the host's Settings window keeps (not DM_LANG, the caller's)
         self.assertTrue((sup / 'save').is_dir()); self.assertTrue((sup / 'temp').is_dir())
         self.assertIn('standin host output', (logs / f'{TID}.log').read_text())
         p = self.launch(); p.communicate(timeout=30)
@@ -224,14 +226,18 @@ class Script(unittest.TestCase):
         ran, tmp = [], Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, tmp)
         out = tmp / 'G.app'
         def fake_run(cmd, log, env=None, cwd=None, on_line=None):
-            ran.append([str(c) for c in cmd]); (out / 'Contents/MacOS').mkdir(parents=True); (out / 'Contents/MacOS/dmhost').write_bytes(b'x')
-            on_line('step: launcher and host (clones of the game files)')
-        g = types.SimpleNamespace(table=lambda n: tmp / 'profile' / n, get={'app_category': 'public.app-category.games', 'romfs_marker': 'a/b'}.get)
+            ran.append([str(c) for c in cmd]); envs.append(env or {})
+            if on_line: (out / 'Contents/MacOS').mkdir(parents=True); (out / 'Contents/MacOS/dmhost').write_bytes(b'x'); on_line('step: launcher and host (clones of the game files)')
+        envs = []
+        if kw.get('control'): (tmp / 'control.nacp').write_bytes(b'n')
+        g = types.SimpleNamespace(id=TID, table=lambda n: tmp / 'profile' / n, get={'app_category': 'public.app-category.games', 'romfs_marker': 'a/b'}.get)
         with mock.patch.object(nsp, 'run', fake_run), mock.patch.object(nsp, 'PROG', mock.Mock()), mock.patch.object(nsp, 'chain_of', lambda repo: '0123456789ab'):
             clones = nsp.mac_app(sys.executable, REPO, out, 0x01008CF01BAAC000, tmp, tmp / 'ex', tmp / 'patched', tmp / 'dmhost', tmp / 'font', tmp / 'shader/cache' if gfx == 'nvn' else tmp / 'shader',
-                                 kw.get('aoc'), gfx, 'en-US', g, 'Game', '1.0.0', 'org.nxnative.01008cf01baac000', None, kw.get('sign', ''), {}, tmp)
+                                 kw.get('aoc'), gfx, 'en-US', g, 'Game', '1.0.0', 'org.nxnative.01008cf01baac000', None, kw.get('sign', ''), {}, tmp, '',
+                                 tmp / 'control.nacp' if kw.get('control') else None)
         self.assertTrue(clones)
-        c = ran[0]; return {c[i]: c[i + 1] for i in range(3, len(c) - 1) if c[i].startswith('--')}, tmp
+        self.ran, self.envs = ran, envs
+        c = ran[-1]; return {c[i]: c[i + 1] for i in range(3, len(c) - 1) if c[i].startswith('--')}, tmp
 
     def test_pack_command(self):
         o, tmp = self.pack_cmd('nvn')
@@ -240,6 +246,14 @@ class Script(unittest.TestCase):
         self.assertNotIn('--aoc', o); self.assertNotIn('--icon', o)
         o, tmp = self.pack_cmd('vulkan', aoc=Path('/x/aoc'), sign='Developer ID Application: X (T)')
         self.assertEqual((o['--msl'], o['--aoc'], o['--sign']), (str(tmp / 'shader/vk'), '/x/aoc', 'Developer ID Application: X (T)'))
+        self.assertNotIn('--settings', o); self.assertEqual(len(self.ran), 1)   # no control data: no player settings
+
+    def test_settings(self):   # the game's player settings for the Mac (dm/games/settings.py with DM_PACK_PLATFORM=mac) go into the app
+        o, tmp = self.pack_cmd('vulkan', control=True)
+        s = self.ran[0]
+        self.assertEqual(s[1:], [str(REPO / 'dm/games/settings.py'), TID, str(tmp / 'patched'), str(tmp / 'control.nacp'), str(tmp / 'tmp/launcher.json')])
+        self.assertEqual((self.envs[0]['GFXAPI'], self.envs[0]['DM_PACK_PLATFORM']), ('vulkan', 'mac'))
+        self.assertEqual(o['--settings'], str(tmp / 'tmp/launcher.json'))
 
 
 if __name__ == '__main__':

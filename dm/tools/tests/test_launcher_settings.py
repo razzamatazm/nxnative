@@ -25,6 +25,14 @@ class LauncherSettingsTests(unittest.TestCase):
                         self.assertEqual(found[0]['default'], '1')   # Breath of the Wild's profile: present_snap on
                         self.assertIn('latency', found[0]['note'])
 
+    def test_platform(self):   # the touch gamepad's feedback is the iPhone's only; the Mac app (DM_PACK_PLATFORM=mac) leaves it out
+        with tempfile.TemporaryDirectory() as tmp, patch.object(settings.nacp, 'languages', return_value=['en-US']):
+            for platform, shown in [('', True), ('ios', True), ('mac', False)]:
+                with self.subTest(platform=platform), patch.dict(os.environ, {'DM_PACK_PLATFORM': platform, 'GFXAPI': 'nvn'}):
+                    rows = settings.build('01007EF00011E000', tmp, Path(tmp) / 'control.nacp')['settings']
+                    self.assertEqual(any(s['env'] == 'DM_TOUCH_HAPTICS' for s in rows), shown)
+                    self.assertTrue(any(s['env'] == 'DM_OPMODE' for s in rows))
+
 
 if __name__ == '__main__':
     unittest.main()

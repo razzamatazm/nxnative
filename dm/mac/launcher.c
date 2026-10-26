@@ -4,7 +4,7 @@
 // Bundle layout: Resources/romfs (the game's RomFS), Resources/msl/<b-chain | vk | gl> (the Mac shader libraries), Resources/aoc/<index> (DLC), Resources/dm (the rewritten modules, the
 // shader tables, font/, env.txt). Saves, the pipeline list and temporary files go to ~/Library/Application Support/nxnative/<title ID>/, the host's output to ~/Library/Logs/nxnative/<title ID>.log
 // (the previous run's kept as <title ID>.prev.log). Environment switches: one KEY=VALUE per line in <Application Support folder>/env.txt, then Resources/dm/env.txt (the first one wins; neither
-// replaces a variable already set), as the iOS app reads Documents/env.txt and dm/env.txt.
+// replaces a variable already set), as the iOS app reads Documents/env.txt and dm/env.txt; DM_ENV_FILE_KEYS lists the variables they set (the host's Settings window shows those as kept, front_mac.m).
 #include <CoreFoundation/CoreFoundation.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -57,6 +57,7 @@ static void mkdirs(const char *path) {   // mkdir -p
     mkdir(p, 0755);
 }
 
+static char g_file_keys[4096];   // the variables the env files set, space-separated (DM_ENV_FILE_KEYS, as the iOS app's main.m)
 static void env_file(const char *path) {   // KEY=VALUE lines, # starts a comment; a variable already set stays
     FILE *f = fopen(path, "r"); if (!f) return;
     char ln[4096];
@@ -66,7 +67,10 @@ static void env_file(const char *path) {   // KEY=VALUE lines, # starts a commen
         char *eq = strchr(s, '=');
         if (*s == '#' || !eq || eq == s) continue;
         *eq = 0; char *k = s; for (char *t = eq - 1; t > k && (*t == ' ' || *t == '\t'); t--) *t = 0;
-        if (!getenv(k)) { setenv(k, eq + 1, 0); fprintf(stderr, "launcher: env %s=%s (%s)\n", k, eq + 1, path); }
+        if (!getenv(k)) {
+            setenv(k, eq + 1, 0); fprintf(stderr, "launcher: env %s=%s (%s)\n", k, eq + 1, path);
+            size_t n = strlen(g_file_keys); snprintf(g_file_keys + n, sizeof g_file_keys - n, "%s%s", n ? " " : "", k);
+        }
     }
     fclose(f);
 }
@@ -100,6 +104,7 @@ int main(void) {
     fprintf(stderr, "launcher: %s (%s), host %s\n", name, id, host);
     snprintf(p, sizeof p, "%s/env.txt", sup); env_file(p);
     snprintf(p, sizeof p, "%s/env.txt", dm); env_file(p);
+    setenv("DM_ENV_FILE_KEYS", g_file_keys, 1);
     setenv("DM_ROOT", sup, 0); setenv("DM_ROMFS", romfs, 0); setenv("DM_SAVE", save, 0); setenv("DM_TEMP", temp, 0);
     snprintf(p, sizeof p, "%s/msl", res); setenv("DM_MSL_DIR", p, 0);
     snprintf(p, sizeof p, "%s/font", dm); setenv("DM_FONT_DIR", p, 0);
