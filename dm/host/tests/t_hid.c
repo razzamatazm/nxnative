@@ -50,6 +50,13 @@ static void t_slots(void) {
     CHECK(pad_slot_take(&s, NULL, "x") == -1 && pad_slot_free(&s, NULL) == -1, "no owner, no slot");
     memset(&s, 0, sizeof s);   // DM_KBD_PLAYER=own: the keyboard holds player 1 for good
     CHECK(pad_slot_take(&s, &kbd, "keyboard") == 0 && pad_slot_take(&s, &a, "Xbox Wireless Controller") == 1, "with the keyboard on its own the first controller is player 2");
+    // Players picked by hand (pad_slot_put): two holders trade players; a holder without a slot leaves the one it replaces without one
+    CHECK(pad_slot_put(&s, &a, 0, "Xbox Wireless Controller") == NULL && pad_slot_of(&s, &a) == 0 && pad_slot_of(&s, &kbd) == 1, "two holders trade players");
+    CHECK(!strcmp(s.last[0], "Xbox Wireless Controller") && !strcmp(s.last[1], "keyboard"), "the names trade with them");
+    CHECK(pad_slot_put(&s, &c, 1, "Pro Controller") == &kbd && pad_slot_of(&s, &kbd) < 0 && pad_slot_of(&s, &c) == 1, "a new holder leaves the one it replaces without a slot");
+    CHECK(pad_slot_put(&s, &d, 5, "8BitDo") == NULL && pad_slot_mask(&s) == 0x23, "a free player is simply taken");
+    CHECK(pad_slot_put(&s, &d, 5, "8BitDo") == NULL && pad_slot_put(&s, NULL, 2, "x") == NULL && pad_slot_put(&s, &d, DM_PLAYERS, "8BitDo") == NULL && pad_slot_of(&s, &d) == 5, "the same slot, no owner or no such player: nothing changes");
+    CHECK(pad_slot_free(&s, &d) == 5 && pad_slot_take(&s, &b2, "8BitDo") == 5, "a slot picked by hand keeps its name for a reconnect");
 }
 
 static void t_npads(void) {

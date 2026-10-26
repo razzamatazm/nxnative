@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # Pack a self-contained, double-clickable Mac app of a game (the NSP script's --platform mac-app): the launcher (dm/mac/launcher.c, compiled here) as CFBundleExecutable, the Mac host beside it,
 # and in Contents/Resources what the IPA carries (dm/ios/tools/build_ipa.sh): romfs/ (the RomFS), msl/<b-chain | vk | gl>/ (the Mac shader libraries, the folder named as in the IPA),
-# aoc/<index>/ (DLC), and dm/ (the rewritten modules and their rewriter tables, nro.tsv, the profile's shader_map.tsv / pso_manifest.tsv / c1_full.tsv / cb_extent.tsv, font/, env.txt),
+# aoc/<index>/ (DLC), and dm/ (the rewritten modules and their rewriter tables, nro.tsv, the profile's shader_map.tsv / pso_manifest.tsv / c1_full.tsv / cb_extent.tsv, font/, env.txt,
+# launcher.json: the game's player settings from dm/games/settings.py, which the host's Settings window shows and applies at start, front_mac.m),
 # plus AppIcon.icns from the game's icon (sips, iconutil) and the Info.plist keys the launcher reads (DMTitleID, DMRomfsMarker, DMLanguage).
 # The large folders are APFS clones (cp -c) when the app is on the same APFS volume as the build, so they take no space; plain copies otherwise.
 # Signing: the inner host first, then the bundle (codesign --force --sign <identity>; '-' = ad-hoc), without the hardened runtime: the host maps the game's code executable, which the hardened
@@ -118,6 +119,7 @@ def pack(a):
     fonts = sorted(Path(a.font).glob('*.ttf'))
     if fonts: copy(fonts, dm / 'font', False)
     if a.env_file: shutil.copyfile(a.env_file, dm / 'env.txt')
+    if a.settings: shutil.copyfile(a.settings, dm / 'launcher.json')
     step('shader libraries'); (res / 'msl').mkdir(); copy([msl], res / 'msl' / (a.msl_name or msl.name), clone)
     if aoc: step('add-on content'); copy([aoc], res / 'aoc', clone)
     step('game files'); copy([romfs], res / 'romfs', clone)
@@ -148,6 +150,7 @@ def parse(argv):
     ap.add_argument('--font', required=True, help='the folder of the shared-font stand-ins (nintendo_ext.ttf)')
     ap.add_argument('--aoc', help='the DLC RomFS folders by index')
     ap.add_argument('--env-file', help='environment switches baked in (Resources/dm/env.txt)')
+    ap.add_argument('--settings', help='the game\'s player settings (dm/games/settings.py output; Resources/dm/launcher.json)')
     ap.add_argument('--title-id', required=True); ap.add_argument('--name', required=True)
     ap.add_argument('--version'); ap.add_argument('--bundle-id'); ap.add_argument('--category'); ap.add_argument('--lang'); ap.add_argument('--marker', help='the profile\'s romfs_marker')
     ap.add_argument('--icon', help='the game icon (icon.jpg from the control data)')

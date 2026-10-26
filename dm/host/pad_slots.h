@@ -31,6 +31,16 @@ static int pad_slot_free(pad_slots *s, const void *owner) {
     int p = pad_slot_of(s, owner); if (p >= 0) s->owner[p] = NULL;
     return p;
 }
+// A player picked by hand (the Mac Controllers menu): owner holds slot p from now on. Its previous slot, if it held one, goes to p's previous holder (the two trade players);
+// otherwise p's previous holder is left without a slot, and that holder is returned (NULL when nothing was left out). The name is kept for a reconnect, as by pad_slot_take
+static const void *pad_slot_put(pad_slots *s, const void *owner, int p, const char *name) {
+    if (!owner || p < 0 || p >= DM_PLAYERS) return NULL;
+    int q = pad_slot_of(s, owner); if (q == p) return NULL;
+    const void *prev = s->owner[p];
+    if (q >= 0) { s->owner[q] = prev; if (prev) { char t[64]; memcpy(t, s->last[q], sizeof t); memcpy(s->last[q], s->last[p], sizeof t); memcpy(s->last[p], t, sizeof t); } }
+    s->owner[p] = owner; snprintf(s->last[p], sizeof s->last[p], "%s", name ? name : "");
+    return q >= 0 ? NULL : prev;
+}
 static uint32_t pad_slot_mask(const pad_slots *s) {   // bit p: slot p is held
     uint32_t m = 0; for (int i = 0; i < DM_PLAYERS; i++) if (s->owner[i]) m |= 1u << i;
     return m;
