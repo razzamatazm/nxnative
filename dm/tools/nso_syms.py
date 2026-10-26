@@ -37,6 +37,9 @@ def dynsyms(img):
 
 def imports(exefs, mod='main'): return {s for s, defined, _ in dynsyms(load(os.path.join(exefs, mod))) if not defined}
 def exports(exefs, mod='sdk'): return {s for s, defined, bind in dynsyms(load(os.path.join(exefs, mod))) if defined and bind in (1, 2)}
+def sdk_exports(exefs):   # exports of every module but main and rtld: the SDK is in sdk when the game ships one, and some games (30XX) ship only subsdk* modules
+    mods = sorted(m for m in os.listdir(exefs) if m == 'sdk' or re.fullmatch(r'subsdk\d+', m))
+    return set().union(*(exports(exefs, m) for m in mods))
 
 def area(s):
     m = re.match(r'_ZN(?:K)?2nn(\d+)(\w+)', s)
@@ -61,7 +64,7 @@ def host_hooks(host, forced=True):
 if __name__ == '__main__':
     host, A, B = sys.argv[1:4]
     hooks = host_hooks(host)
-    ia, ib, eb = (set() if A == '-' else imports(A)), imports(B), exports(B)   # A = -: no reference game, compare with the host hooks only
+    ia, ib, eb = (set() if A == '-' else imports(A)), imports(B), sdk_exports(B)   # A = -: no reference game, compare with the host hooks only
     print('HLE hooks in host:', len(hooks), '| present in new game sdk exports:', len(hooks & eb))
     print('main imports: old game %d, new game %d, shared %d, new-only %d' % (len(ia), len(ib), len(ia & ib), len(ib - ia)))
     new = ib - ia

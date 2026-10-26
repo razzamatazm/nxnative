@@ -124,19 +124,37 @@ int dm_main_imports(const char *prefix) {
     return 0;
 }
 
-// SDK major version, from the version string the SDK's libraries keep in the sdk module's read-only data ("NintendoSDK_nnSdk-10_4_0"; SDK 12 spells it NintendoSdk_).
-// Behaviour that follows the SDK version is decided by it (the NVN API version, the shared-font layout), not by the game profile. 0 = no sdk module or no version string
+// The modules that hold Nintendo's SDK: sdk, then subsdk0, subsdk1, ... in that order. Most games ship sdk; some ship only subsdk modules (30XX: subsdk0 holds the SDK,
+// subsdk1 / subsdk2 its other libraries), so a lookup in the SDK goes through all of them, sdk first
+static int subsdk_index(const char *name) {   // N for subsdkN, -1 for any other name
+    if (strncmp(name, "subsdk", 6) || !name[6]) return -1;
+    for (const char *p = name + 6; *p; p++) if (*p < '0' || *p > '9') return -1;
+    return atoi(name + 6);
+}
+int dm_sdk_modules(module_t **out, int max) {
+    int n = 0;
+    for (int i = 0; i < g_nmod && n < max; i++) if (!strcmp(g_mod[i].name, "sdk")) out[n++] = &g_mod[i];
+    for (int k = 0, left = 1; left && n < max; k++) {   // subsdkN by N, whatever the load order
+        left = 0;
+        for (int i = 0; i < g_nmod; i++) { int x = subsdk_index(g_mod[i].name); if (x > k) left = 1; if (x == k && n < max) out[n++] = &g_mod[i]; }
+    }
+    return n;
+}
+
+// SDK major version, from the version string the SDK's libraries keep in the SDK modules' read-only data ("NintendoSDK_nnSdk-10_4_0"; SDK 12 spells it NintendoSdk_).
+// Behaviour that follows the SDK version is decided by it (the NVN API version, the shared-font layout), not by the game profile. 0 = no SDK module or no version string
 int dm_sdk_major(void) {
     static int major = -1;
     if (major >= 0) return major;
     major = 0;
-    for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) {
-        const char *b = (const char *)g_mod[i].base + g_mod[i].ro_off, *e = (const char *)g_mod[i].base + g_mod[i].key_page_off;   // read-only data, data and bss
+    module_t *ms[16]; int nms = dm_sdk_modules(ms, 16);
+    for (int i = 0; i < nms && !major; i++) {
+        const char *b = (const char *)ms[i]->base + ms[i]->ro_off, *e = (const char *)ms[i]->base + ms[i]->key_page_off;   // read-only data, data and bss
         for (const char *p = b; (p = memmem(p, (size_t)(e - p), "_nnSdk-", 7)); p += 7)
             if (p - b >= 11 && !strncasecmp(p - 11, "NintendoSDK", 11) && p[7] >= '0' && p[7] <= '9') {
-                major = atoi(p + 7); LOG("sdk: NintendoSDK nnSdk-%.12s (major %d)", p + 7, major); break; }
+                major = atoi(p + 7); LOG("sdk: NintendoSDK nnSdk-%.12s (major %d, in %s)", p + 7, major, ms[i]->name); break; }
     }
-    if (!major) LOG("[RED] sdk: no SDK version string in the sdk module; SDK-dependent behaviour takes the newer SDKs' side");
+    if (!major) LOG("[RED] sdk: no SDK version string in the SDK modules; SDK-dependent behaviour takes the newer SDKs' side");
     return major;
 }
 

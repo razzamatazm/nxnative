@@ -121,6 +121,13 @@ The guest address space, heaps, pools, virtual address memory and the allocators
 
 ## Engine allocators
 
+### The SDK in subsdk modules, with no `sdk`
+
+- **Symptom:** `FATAL StandardAllocator::Allocate not found in the SDK` in `nninitStartup` (`h_mem_SAAllocate`, called from `main`'s init array); before that the NSP script's survey stopped in `nso_syms.py` with `FileNotFoundError: … ExeFS/sdk`.
+- **Cause:** the game ships no `sdk` module: Nintendo's SDK is in `subsdk0` (its `nnSdk-13_3_5` string and `StandardAllocator::Allocate`), next to NVIDIA's GL driver and GLSLC in `subsdk1` / `subsdk2`. The host's allocator hook, `dm_sdk_major` and the survey looked only in a module named `sdk`.
+- **Fix:** `dm_sdk_modules` (`loader.c`) lists the modules that may hold the SDK, `sdk` first and then `subsdk0`, `subsdk1`, …; the allocator hook (`hle_os.c`) and the SDK version (`dm_sdk_major`) search them in that order, and `nso_syms.py` reads the exports of all of them (`sdk_exports`).
+- **Found on:** [30XX](../../dm/games/010059B017F9E000/README.md) (SDK 13.3.5).
+
 ### StandardAllocators over 12 to 62 GB of address space
 
 - **Symptom:** `StandardAllocator::Initialize` aborts in `nninitStartup` (Pokémon Legends: Z-A: `main+0x1b2e690`); `nn::diag` abort at `sdk+0x11ff34` (`StandardAllocator::Initialize`) in `nninitStartup`, SDK 15.3.2, called from `main+0x31370c` (Paper Mario: The Thousand-Year Door).

@@ -1,0 +1,41 @@
+# Game profile of 30XX (Switch, update 1.3.6 = v851968). On the Mac through the title into the first level with scripted input; the iPhone is not tested yet
+# Format: see dm/games/README.md
+# Batterystaple Games' own engine, SDK 13.3.5, sound through FMOD. It renders with NVIDIA's desktop OpenGL 4.5 through EGL: it binds OpenGL ES first only to list the EGL
+# configurations, then makes a desktop 4.5 context and fills its buffers by name (direct state access). main gets its GL functions from a glad loader (eglGetProcAddress), which the
+# host's GL layer implements on Metal (dm/gfx/gl/hle_gl.m). The shaders are #version 120 GLSL the engine puts together at run time from one shared header and a body: no game
+# file holds them whole, so the NSP script captures them by booting the game on the Mac (gl_capture.tsv lists them) and dm/gfx/tools/gl_shaders.py translates them offline
+
+# ---- Identity ----
+title_id	010059B017F9E000
+program_id	010059B017F9E000
+
+# ---- App ----
+# Game name: only a label for profile listings and the Mac window title; the iOS app name is the game name in the base NSP, and the bundle ID comes from the base game title ID (build_ipa.sh / NSP script)
+name	30XX
+ipa	30xx.ipa
+app_category	public.app-category.action-games
+
+# ---- Versions ----
+build	v851968	1.3.6	main=be1628b747c32d98ce0a98c544377ec3	subsdk0=43211771ed39e7fcef03d88e27091831
+package	v851968
+shader_versions	v851968
+
+# ---- Files ----
+# The game ships no sdk module: Nintendo's SDK is subsdk0 (its nnSdk-13_3_5 string and StandardAllocator), which the host searches as the SDK (dm_sdk_modules). subsdk1 / subsdk2
+# are NVIDIA's OpenGL driver and GLSLC, which program the GPU through NvRm: never loaded, the GL layer answers main's EGL imports
+modules	main subsdk0
+romfs_marker	snd/switch/sfx.bank
+zip_store	.30flv:.bank:.png:.metallib
+
+# ---- Memory ----
+# The NPDM declares no system resource, so the game has no virtual address memory (IsVirtualAddressMemoryEnabled is false, as on Horizon): main sets a heap of at most the pool − 64 MB,
+# a 3328 MB heap region. About 2.5 GB resident on the Mac in the first level (1.8 GB of it Metal allocations)
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+sys_resource	0x0
+
+# ---- Shader split ----
+# no NVN shaders: the NVN tables stay empty (gl_shaders.py writes the GL library and its table, not the profile)
+shader_note	30XX has no NVN shaders (its GLSL shaders go through the GL layer)

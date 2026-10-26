@@ -84,8 +84,13 @@ def call_args(t, i):
         elif c == ',' and depth == 1: args.append(t[start:k]); start = k + 1
     raise ValueError('unbalanced parentheses')
 
+# Names of Metal's sampling argument types (metal::bias, metal::level, ...), which spirv-cross keeps for a shader's own function: the call becomes ambiguous in MSL (30XX defines bias(t, b))
+METAL_CLASH = ('bias', 'level', 'gradient2d', 'gradient3d', 'gradientcube', 'min_lod_clamp')
+
 def fixups(t):
     for a, b in OLD_TEX: t = re.sub(a, b, t)
+    for f in METAL_CLASH:
+        if re.search(rf'^[ \t]*\w+\s+{f}\s*\(', t, re.M): t = re.sub(rf'\b{f}\b(?=\s*\()', f'{f}_g', t)
     t = re.sub(r'^[ \t]*out\s+(?:highp\s+|mediump\s+|lowp\s+)?vec4\s+gl_Position\s*;', '', t, flags=re.M)
     out, i = [], 0
     for m in re.finditer(r'\btextureOffset\s*\(', t):
@@ -95,6 +100,30 @@ def fixups(t):
             s_, p_, o_ = (x.strip() for x in args)
             out.append(t[i:m.start()] + f'texture({s_}, ({p_}) + vec2({o_}) / vec2(textureSize({s_}, 0)))'); i = end
     return ''.join(out) + t[i:]
+
+# Desktop GLSL older than 1.40 (30XX: #version 120, attribute / varying, gl_FragColor, texture2D): glslang makes SPIR-V only from 1.40 on, so such a shader is raised to 3.30 on the
+# preprocessed text, with the 1.20 keywords as 3.30 spells them. Functions that 1.30 and later made built in (30XX defines its own trunc) are renamed: in 1.20 every call is the shader's own
+NEWER_BUILTINS = ('trunc', 'round', 'roundEven', 'isnan', 'isinf', 'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh', 'determinant', 'inverse', 'floatBitsToInt', 'intBitsToFloat')
+
+def upgrade_old(t, stage):
+    m = re.match(r'#version[ \t]+(\d+)[ \t]*(\w*)', t)
+    if not m or m.group(2) == 'es' or int(m.group(1)) >= 140: return t
+    t = '#version 330' + t[m.end():]
+    for f in NEWER_BUILTINS:
+        if re.search(rf'^[ \t]*\w+\s+{f}\s*\(', t, re.M): t = re.sub(rf'\b{f}\b(?=\s*\()', f'{f}_g', t)
+    if stage == 'vert':
+        t = re.sub(r'^([ \t]*)attribute\b', r'\1in', t, flags=re.M)
+        t = re.sub(r'^([ \t]*)varying\b', r'\1out', t, flags=re.M)
+    else:
+        t = re.sub(r'^([ \t]*)varying\b', r'\1in', t, flags=re.M)
+        if re.search(r'\bgl_FragColor\b', t):
+            t = re.sub(r'\bgl_FragColor\b', 'dm_FragColor', t)
+            t = re.sub(r'^(#version 330[^\n]*\n)', r'\1layout(location = 0) out vec4 dm_FragColor;\n', t)
+        if re.search(r'\bgl_FragData\s*\[', t):
+            t = re.sub(r'\bgl_FragData\s*\[\s*(\d+)\s*\]', r'dm_FragData\1', t)
+            outs = ''.join(f'layout(location = {k}) out vec4 dm_FragData{k};\n' for k in sorted({int(x) for x in re.findall(r'dm_FragData(\d+)', t)}))
+            t = re.sub(r'^(#version 330[^\n]*\n)', lambda mm: mm.group(1) + outs, t)
+    return t
 
 def glsl_type(t, refl):
     return refl['types'][t]['name'] if t in refl.get('types', {}) else t
@@ -106,7 +135,7 @@ def translate(src, stage, key, tmp):
     r = subprocess.run(['glslangValidator', '-E', '-S', stage, g + '.in'], capture_output=True, text=True)
     if r.returncode: return 'glslang -E: ' + ' | '.join(l for l in (r.stdout + r.stderr).splitlines() if 'ERROR' in l and 'compilation' not in l)[:400]
     pre = r.stdout[r.stdout.find('#version'):]   # warnings come first
-    open(g, 'w').write(fixups(pre))
+    open(g, 'w').write(fixups(upgrade_old(pre, stage)))
     r = subprocess.run(['glslangValidator', '-V', '-R', '--aml', '--amb', '-S', stage, g, '-o', spv], capture_output=True, text=True)
     if r.returncode: return 'glslang: ' + ' | '.join(l for l in (r.stdout + r.stderr).splitlines() if 'ERROR' in l and 'compilation' not in l)[:400]
     refl = json.loads(subprocess.run(['spirv-cross', spv, '--reflect'], capture_output=True, text=True, check=True).stdout)
@@ -137,9 +166,12 @@ def translate(src, stage, key, tmp):
             if ty == 'uint' and mb['name'] in bools: ty = 'bool'
             if ty not in VEC_TYPES: return f'uniform {mb["name"]}: type {ty} (structs are not implemented)'
             f.append(f'u:{mb["name"]}={mb["offset"]}:{ty}:{arr[0] if arr else 0}:{mb.get("array_stride", 0)}')
+    # Samplers: only those the entry point takes. glslang's --amb numbers the samplers a shader uses; the others it declares keep binding 0, and a row for each would have the host bind
+    # its texture over slot 0 (30XX declares 14 samplers in every shader and samples one or two: the last default texture bound to slot 0 turned its scene black)
+    used = set(re.findall(r'\b(\w+)\s+\[\[texture\(\d+\)\]\]', m))
     for t in refl.get('textures', []):
         if t.get('array'): return f'sampler array {t["name"]}'
-        f.append(f't:{t["name"]}={t["binding"]}:{t["type"]}')
+        if t['name'] in used: f.append(f't:{t["name"]}={t["binding"]}:{t["type"]}')
     for k in ('separate_images', 'separate_samplers', 'images', 'ssbos', 'push_constants'):
         if refl.get(k): return f'{k} are not implemented'
     if any(int(x) > 15 for x in re.findall(r'\[\[(?:sampler|buffer)\((\d+)\)\]\]', m)): return 'a buffer or sampler slot above 15'

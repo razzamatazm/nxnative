@@ -348,20 +348,20 @@ static prog_t *prog_of(GLuint n) { return n && n < g_nsps && g_sps[n] && g_sps[n
 // va: each attribute's current value (glVertexAttrib4f), what a vertex input reads when its array is disabled: LÖVE's VertexColor and ConstantColor
 #define NUNITS 96
 static struct {
-    GLuint array_buf, rb, fb, read_fb, prog, vao; int unit;
+    GLuint array_buf, unpack_buf, rb, fb, read_fb, prog, vao; int unit;
     struct { GLuint t2d, tcube, t3d, t2da; } units[NUNITS];
     float clear_c[4]; double clear_d; int clear_s;
     uint8_t cmask, dmask, depth, blend, cull, scissor, stencil, poffset, srgb;
     GLenum dfunc, cull_face, front, bsrc, bdst, bsa, bda, eqc, eqa;
     GLenum sfunc, sfail, szfail, spass; GLint sref; GLuint smask, swmask;
-    GLint vp[4], sc[4]; float pfactor, punits, psize;
+    GLint vp[4], sc[4]; float pfactor, punits, psize, dnear, dfar;
     float va[16][4];
     int unpack_align, unpack_row, pack_align;
     uint32_t palette[256]; int npalette, color_table, index_shift, index_offset;
     int swap_interval;
 } S = {.cmask = 0xf, .dmask = 1, .dfunc = 0x201, .cull_face = GL_BACK, .front = GL_CCW, .bsrc = 1, .bdst = 0, .bsa = 1, .bda = 0, .eqc = GL_FUNC_ADD, .eqa = GL_FUNC_ADD,
        .sfunc = 0x207, .sfail = GL_KEEP, .szfail = GL_KEEP, .spass = GL_KEEP, .smask = 0xffffffff, .swmask = 0xffffffff, .clear_d = 1, .unpack_align = 4, .pack_align = 4,
-       .swap_interval = 1, .psize = 1,
+       .swap_interval = 1, .psize = 1, .dfar = 1,
        .va = {{0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1},
               {0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1}}};
 static vao_t *cur_vao(void) { return S.vao && S.vao < g_nvaos && g_vaos[S.vao] ? g_vaos[S.vao] : &g_vao0; }
@@ -395,9 +395,9 @@ static void win_make(uint32_t w, uint32_t h) {
 
 // ---------- Formats ----------
 // fmt: index into g_fmt. A swizzle only where Metal's default differs from GL's: Metal reads a channel a format lacks as 0 (alpha 1), as GL does, so only the luminance /
-// alpha formats and DXT1 without alpha have one (Metal refuses a swizzle on a render target, and GL cannot render into those). Conversions on upload: CV_COPY (the bytes as given), CV_RGB8 (RGB → RGBA), CV_565 / CV_4444 / CV_5551 (16-bit packed → RGBA8), CV_INDEX (8-bit colour
+// alpha formats and DXT1 without alpha have one (Metal refuses a swizzle on a render target, and GL cannot render into those). Conversions on upload: CV_COPY (the bytes as given), CV_RGB8 (RGB → RGBA), CV_565 / CV_4444 / CV_5551 (16-bit packed → RGBA8), CV_SWAP_RB (BGRA ↔ RGBA bytes), CV_INDEX (8-bit colour
 // indices through the glColorTable palette). bw / bh: block size of a compressed format, bytes: per texel or per block
-enum { CV_COPY, CV_RGB8, CV_565, CV_4444, CV_5551, CV_INDEX, CV_NONE };
+enum { CV_COPY, CV_RGB8, CV_565, CV_4444, CV_5551, CV_INDEX, CV_SWAP_RB, CV_NONE };
 enum { K_COL, K_DEPTH, K_DS, K_BLOCK };
 typedef struct { MTLPixelFormat pf; uint8_t bytes, bw, bh, kind; MTLTextureSwizzleChannels swz; const char *name; } fmt_t;
 #define SWZ(r, g, b, a) {MTLTextureSwizzle##r, MTLTextureSwizzle##g, MTLTextureSwizzle##b, MTLTextureSwizzle##a}
@@ -510,6 +510,7 @@ static void *pixels_convert(const void *src, uint32_t w, uint32_t h, GLenum form
         uint8_t *d = dst + y * dp;
         switch (cv) {
             case CV_COPY: memcpy(d, s, umin((uint32_t)dp, (uint32_t)((size_t)w * comps * tbytes))); break;
+            case CV_SWAP_RB: for (uint32_t x = 0; x < w; x++) { d[4 * x] = s[4 * x + 2]; d[4 * x + 1] = s[4 * x + 1]; d[4 * x + 2] = s[4 * x]; d[4 * x + 3] = s[4 * x + 3]; } break;
             case CV_RGB8: for (uint32_t x = 0; x < w; x++) { d[4 * x] = s[3 * x]; d[4 * x + 1] = s[3 * x + 1]; d[4 * x + 2] = s[3 * x + 2]; d[4 * x + 3] = 255; } break;
             case CV_565: for (uint32_t x = 0; x < w; x++) { uint16_t v; memcpy(&v, s + 2 * x, 2); d[4 * x] = (v >> 11) * 255 / 31; d[4 * x + 1] = (v >> 5 & 63) * 255 / 63; d[4 * x + 2] = (v & 31) * 255 / 31; d[4 * x + 3] = 255; } break;
             case CV_4444: for (uint32_t x = 0; x < w; x++) { uint16_t v; memcpy(&v, s + 2 * x, 2); d[4 * x] = (v >> 12) * 17; d[4 * x + 1] = (v >> 8 & 15) * 17; d[4 * x + 2] = (v >> 4 & 15) * 17; d[4 * x + 3] = (v & 15) * 17; } break;
@@ -651,7 +652,7 @@ static void tex_image(GLenum target, GLint level, int f, int cv, uint32_t w, uin
 // The pass being encoded: framebuffer name, its attachments' generation (a changed attachment ends the pass), clears waiting for the pass to begin
 static struct { GLuint fb; uint64_t gen; int open; uint32_t w, h; MTLPixelFormat cpf, dpf, spf; } P;
 static struct { int bits; float c[4]; double d; int s; GLuint fb; } g_pend_clear;
-static struct { void *pso; void *dss; int cull, wind, vp[4], sc[4], sref; float pf, pu; GLuint prog; uint64_t ub_gen[2]; } E;   // encoder state set so far (NULL / -1 = unset)
+static struct { void *pso; void *dss; int cull, wind, vp[4], sc[4], sref; float pf, pu, dn, df; GLuint prog; uint64_t ub_gen[2]; } E;   // encoder state set so far (NULL / -1 = unset)
 
 static id<MTLTexture> att_tex(const att_t *a, uint64_t *gen) {
     if (a->kind == 1) { tex_t *t = tex_of(a->name); if (!t) return nil; if (!t->made) tex_make(t, 1); *gen += t->gen; t->use = g_serial; return t->tex; }
@@ -671,7 +672,7 @@ static void pass_end(void) {
     if (g_enc) { [g_enc endEncoding]; g_enc = nil; }
     P.open = 0;
 }
-static void enc_reset(void) { memset(&E, 0, sizeof E); E.cull = E.wind = E.sref = -1; E.vp[2] = E.sc[2] = -1; E.pf = E.pu = NAN; }
+static void enc_reset(void) { memset(&E, 0, sizeof E); E.cull = E.wind = E.sref = -1; E.vp[2] = E.sc[2] = -1; E.pf = E.pu = E.dn = E.df = NAN; }
 static void pass_begin(void) {
     @autoreleasepool {
         id<MTLCommandBuffer> cb = cb_get();
@@ -854,7 +855,8 @@ static void enc_state(void) {
     // GL viewport (lower-left origin) → flipped Metal viewport (see the file header); the scissor rectangle is the same rows
     int vp[4] = {S.vp[0], S.vp[1], S.vp[2], S.vp[3]};
     if (!vp[2] && !vp[3]) { vp[2] = P.w; vp[3] = P.h; }
-    if (memcmp(vp, E.vp, sizeof vp)) { memcpy(E.vp, vp, sizeof vp); [e setViewport:(MTLViewport){vp[0], vp[1] + vp[3], vp[2], -vp[3], 0, 1}]; }
+    // the depth range is the viewport's: the vertex shaders' z is already 0 to w (gl_shaders.py --fixup-clipspace), which Metal maps onto znear to zfar as GL maps −w to w onto glDepthRange
+    if (memcmp(vp, E.vp, sizeof vp) || E.dn != S.dnear || E.df != S.dfar) { memcpy(E.vp, vp, sizeof vp); E.dn = S.dnear; E.df = S.dfar; [e setViewport:(MTLViewport){vp[0], vp[1] + vp[3], vp[2], -vp[3], S.dnear, S.dfar}]; }
     int sc[4] = {0, 0, (int)P.w, (int)P.h};
     if (S.scissor) {
         int x0 = S.sc[0] < 0 ? 0 : S.sc[0], y0 = S.sc[1] < 0 ? 0 : S.sc[1], x1 = S.sc[0] + S.sc[2], y1 = S.sc[1] + S.sc[3];
@@ -1107,6 +1109,20 @@ GL(glStencilMask, void, GLuint m) { S.swmask = m; }
 GL(glStencilOp, void, GLenum sf, GLenum zf, GLenum zp) { S.sfail = sf; S.szfail = zf; S.spass = zp; }
 GL(glPolygonOffset, void, GLfloat f, GLfloat u) { S.pfactor = f; S.punits = u; }
 GL(glViewport, void, GLint x, GLint y, GLsizei w, GLsizei h) { S.vp[0] = x; S.vp[1] = y; S.vp[2] = w; S.vp[3] = h; }
+static float clamp01(double x) { return x < 0 ? 0 : x > 1 ? 1 : (float)x; }
+GL(glDepthRangef, void, GLfloat n, GLfloat f) { S.dnear = clamp01(n); S.dfar = clamp01(f); }
+GL(glDepthRange, void, GLdouble n, GLdouble f) { S.dnear = clamp01(n); S.dfar = clamp01(f); }
+GL(glIsEnabled, uint32_t, GLenum cap) { uint8_t *c = cap_of(cap); if (c) return *c; if (cap == GL_FRAMEBUFFER_SRGB) return S.srgb; RED1("glIsEnabled(%#x) not implemented (false)", cap); return 0; }
+// Booleans the layer keeps: the write masks and the capabilities glEnable sets; anything else as glGetIntegerv answers it, non-zero = true
+static void h_glGetIntegerv(GLenum p, GLint *v);
+GL(glGetBooleanv, void, GLenum p, uint8_t *v) {
+    switch (p) {
+        case 0xb72: *v = S.dmask; return;   // DEPTH_WRITEMASK
+        case 0xc23: for (int i = 0; i < 4; i++) v[i] = S.cmask >> i & 1; return;   // COLOR_WRITEMASK
+    }
+    uint8_t *c = cap_of(p); if (c) { *v = *c; return; }
+    GLint iv[4] = {0}; h_glGetIntegerv(p, iv); *v = iv[0] != 0;
+}
 GL(glScissor, void, GLint x, GLint y, GLsizei w, GLsizei h) { S.sc[0] = x; S.sc[1] = y; S.sc[2] = w; S.sc[3] = h; }
 GL(glPixelStorei, void, GLenum p, GLint v) {
     if (p == GL_UNPACK_ALIGNMENT && (v == 1 || v == 2 || v == 4 || v == 8)) S.unpack_align = v;
@@ -1127,6 +1143,7 @@ GL(glColorTable, void, GLenum target, GLenum ifmt, GLsizei w, GLenum format, GLe
 GL(glTexEnvi, void, GLenum t, GLenum p, GLint v) { (void)t; (void)p; (void)v; }
 GL(glGetError, GLenum, void) { return 0; }
 // Everything recorded so far runs to its end (LÖVE when the window changes)
+GLB(glFlush, void, void) { if (g_pend_clear.bits) clears_flush(); dm_gfx_enter(); cb_commit(); dm_gfx_leave(); }   // the recorded commands go to the GPU, nothing is waited for
 GLB(glFinish, void, void) { if (g_pend_clear.bits) clears_flush(); dm_gfx_enter(); id<MTLCommandBuffer> cb = cb_get(); cb_commit(); [cb waitUntilCompleted]; dm_gfx_leave(); }
 // Debug output and labels (LÖVE's debug groups and its GL debug callback, used when the game asks for debug output): none here
 GL(glDebugMessageCallback, void, void *cb, const void *user) { (void)cb; (void)user; }
@@ -1142,12 +1159,15 @@ static const char *const g_exts[] = {"GL_ARB_ES3_2_compatibility", "GL_ARB_ES3_c
     "GL_EXT_texture_compression_s3tc", "GL_EXT_texture_filter_anisotropic", "GL_ARB_vertex_array_object", "GL_ARB_direct_state_access", "GL_ARB_half_float_vertex",
     "GL_ARB_framebuffer_object", "GL_ARB_texture_float", "GL_EXT_texture_sRGB", "GL_KHR_texture_compression_astc_ldr", "GL_NV_shadow_samplers_cube"};
 #define NEXTS (int)(sizeof g_exts / sizeof *g_exts)
+// The API eglBindAPI chose: desktop OpenGL (0x30a2) or OpenGL ES (0x30a0). Both run on the same layer, as NVIDIA's driver serves the ES entry points from the desktop implementation;
+// only what the game reads back (the version strings, the EGL queries) says ES. 30XX binds ES first to look at the configurations (eglGetConfigs), then renders with a desktop 4.5 context
+static int g_egl_es;
 GL(glGetString, const char *, GLenum n) {
     switch (n) {
         case GL_VENDOR: return "NVIDIA Corporation";
         case GL_RENDERER: return "NVIDIA Tegra X1 (nvgpu)/integrated (Metal)";
-        case GL_VERSION: return "4.5.0 NVIDIA 349.00";
-        case GL_SHADING_LANGUAGE_VERSION: return "4.50 NVIDIA";
+        case GL_VERSION: return g_egl_es ? "OpenGL ES 3.2 NVIDIA 349.00" : "4.5.0 NVIDIA 349.00";
+        case GL_SHADING_LANGUAGE_VERSION: return g_egl_es ? "OpenGL ES GLSL ES 3.20" : "4.50 NVIDIA";
         case GL_EXTENSIONS: {   // the compatibility profile's one string
             static char all[1024]; if (!all[0]) for (int i = 0; i < NEXTS; i++) { strlcat(all, g_exts[i], sizeof all); strlcat(all, " ", sizeof all); }
             return all;
@@ -1156,6 +1176,7 @@ GL(glGetString, const char *, GLenum n) {
     RED1("glGetString(%#x) not implemented", n); return "";
 }
 GL(glGetStringi, const char *, GLenum n, GLuint i) { return n == GL_EXTENSIONS && i < (GLuint)NEXTS ? g_exts[i] : NULL; }
+GL(glMaxShaderCompilerThreadsARB, void, GLuint n) { (void)n; }   // ARB_parallel_shader_compile: the host's shaders are built ahead, the hint changes nothing
 GL(glGetIntegerv, void, GLenum p, GLint *v) {
     switch (p) {
         case GL_NUM_EXTENSIONS: *v = NEXTS; return;
@@ -1163,6 +1184,7 @@ GL(glGetIntegerv, void, GLenum p, GLint *v) {
         case GL_MINOR_VERSION: *v = 5; return;
         case GL_CONTEXT_PROFILE_MASK: *v = 1; return;   // CONTEXT_CORE_PROFILE_BIT: what the games asked for (Digimon a 4.5 core context); LÖVE takes its core paths (the file header)
         case GL_CONTEXT_FLAGS: *v = 0; return;
+        case 0x91b0: *v = 1; return;   // MAX_SHADER_COMPILER_THREADS_ARB
         case GL_MAX_TEXTURE_SIZE: case GL_MAX_RENDERBUFFER_SIZE: case GL_MAX_CUBE_MAP_TEXTURE_SIZE: *v = 16384; return;
         case GL_MAX_3D_TEXTURE_SIZE: case GL_MAX_ARRAY_TEXTURE_LAYERS: *v = 2048; return;
         case GL_MAX_VIEWPORT_DIMS: v[0] = v[1] = 16384; return;
@@ -1217,15 +1239,15 @@ GL(glDeleteBuffers, void, GLsizei n, const GLuint *b) {
 GL(glBindBuffer, void, GLenum target, GLuint b) {
     if (target == GL_ARRAY_BUFFER) S.array_buf = b;
     else if (target == GL_ELEMENT_ARRAY_BUFFER) cur_vao()->ebo = b;
+    else if (target == 0x88ec) S.unpack_buf = b;   // PIXEL_UNPACK_BUFFER: texture uploads read from it (unpack_src)
     else RED1("glBindBuffer target %#x not implemented", target);
 }
-static buf_t *bound_buf(GLenum target) { return buf_of(target == GL_ARRAY_BUFFER ? S.array_buf : target == GL_ELEMENT_ARRAY_BUFFER ? cur_vao()->ebo : 0); }
+static buf_t *bound_buf(GLenum target) { return buf_of(target == GL_ARRAY_BUFFER ? S.array_buf : target == GL_ELEMENT_ARRAY_BUFFER ? cur_vao()->ebo : target == 0x88ec ? S.unpack_buf : 0); }
+// Each operation on a buffer object, reached through its binding (glBufferData, ...) or its name (glNamedBufferData, ..., GL 4.5 direct state access: 30XX); what names the call in the red lines
 // Orphaning: data for a buffer a pending command buffer may still read goes into a new MTLBuffer, so draws already encoded keep the old contents
-GLB(glBufferData, void, GLenum target, GLsizeiptr size, const void *data, GLenum usage) {
-    (void)usage;
-    buf_t *b = bound_buf(target);
-    if (!b) { RED1("glBufferData with no buffer bound to %#x", target); return; }
-    if (b->immutable) { RED1("glBufferData on a buffer glBufferStorage made"); return; }
+static void buf_data(buf_t *b, const char *what, GLsizeiptr size, const void *data) {
+    if (!b) { RED1("%s with no buffer", what); return; }
+    if (b->immutable) { RED1("%s on a buffer glBufferStorage made", what); return; }
     if (size <= 0) { b->mb = nil; b->size = 0; return; }
     @autoreleasepool {
         if (!b->mb || b->mb.length < (NSUInteger)size || b->use > atomic_load(&g_done) || b->mb.length > (NSUInteger)size * 2 + 4096)
@@ -1235,41 +1257,50 @@ GLB(glBufferData, void, GLenum target, GLsizeiptr size, const void *data, GLenum
     }
 }
 // Immutable storage that stays mapped: the game writes into the MTLBuffer's own memory and fences what the GPU still reads (LÖVE's StreamBufferPersistentMapSync)
-GLB(glBufferStorage, void, GLenum target, GLsizeiptr size, const void *data, GLbitfield flags) {
-    (void)flags; buf_t *b = bound_buf(target);
-    if (!b || size <= 0) { RED1("glBufferStorage(%#x, %ld) with no buffer bound", target, (long)size); return; }
+static void buf_storage(buf_t *b, const char *what, GLsizeiptr size, const void *data) {
+    if (!b || size <= 0) { RED1("%s(%ld) with no buffer", what, (long)size); return; }
     @autoreleasepool { b->mb = [g_dev newBufferWithLength:(size + 15) & ~(GLsizeiptr)15 options:MTLResourceStorageModeShared]; }
     b->size = size; b->use = 0; b->immutable = 1;
     if (data) memcpy(b->mb.contents, data, size);
 }
 // In command order: new bytes for a buffer a pending command buffer may still read go into a copy of it, which later draws use (the draws already encoded keep the old one)
-GLB(glBufferSubData, void, GLenum target, GLintptr off, GLsizeiptr size, const void *data) {
-    buf_t *b = bound_buf(target);
-    if (!b || !b->mb || off < 0 || size < 0 || (size_t)(off + size) > b->size) { RED1("glBufferSubData(%#x, %ld, %ld) outside the bound buffer", target, (long)off, (long)size); return; }
+static void buf_subdata(buf_t *b, const char *what, GLintptr off, GLsizeiptr size, const void *data) {
+    if (!b || !b->mb || off < 0 || size < 0 || (size_t)(off + size) > b->size) { RED1("%s(%ld, %ld) outside the buffer", what, (long)off, (long)size); return; }
     if (b->use > atomic_load(&g_done)) {
-        if (b->immutable) RED1("glBufferSubData into a buffer glBufferStorage made while the GPU may still read it");
+        if (b->immutable) RED1("%s into a buffer glBufferStorage made while the GPU may still read it", what);
         else { @autoreleasepool { id<MTLBuffer> nb = [g_dev newBufferWithLength:b->mb.length options:MTLResourceStorageModeShared]; memcpy(nb.contents, b->mb.contents, b->size); b->mb = nb; } b->use = 0; }
     }
     if (size) memcpy((uint8_t *)b->mb.contents + off, data, size);
 }
 // The mapping is the MTLBuffer's own memory: a persistent or unsynchronized mapping is the game's to fence; invalidating a whole buffer in flight orphans it, as glBufferData does
-GLB(glMapBufferRange, void *, GLenum target, GLintptr off, GLsizeiptr len, GLbitfield access) {
-    buf_t *b = bound_buf(target);
-    if (!b || !b->mb || off < 0 || len <= 0 || (size_t)(off + len) > b->size) { RED1("glMapBufferRange(%#x, %ld, %ld) outside the bound buffer", target, (long)off, (long)len); return NULL; }
+static void *buf_map(buf_t *b, const char *what, GLintptr off, GLsizeiptr len, GLbitfield access) {
+    if (!b || !b->mb || off < 0 || len <= 0 || (size_t)(off + len) > b->size) { RED1("%s(%ld, %ld) outside the buffer", what, (long)off, (long)len); return NULL; }
     if (b->use > atomic_load(&g_done) && !b->immutable && (access & GL_MAP_INVALIDATE_BUFFER_BIT)) {
         @autoreleasepool { b->mb = [g_dev newBufferWithLength:b->mb.length options:MTLResourceStorageModeShared]; } b->use = 0;
     } else if (b->use > atomic_load(&g_done) && !(access & (0x40 /* PERSISTENT */ | 0x20 /* UNSYNCHRONIZED */)))
-        RED1("glMapBufferRange of a buffer the GPU may still read: not waited for");
+        RED1("%s of a buffer the GPU may still read: not waited for", what);
     return (uint8_t *)b->mb.contents + off;
 }
+GLB(glBufferData, void, GLenum target, GLsizeiptr size, const void *data, GLenum usage) { (void)usage; buf_data(bound_buf(target), "glBufferData", size, data); }
+GLB(glBufferStorage, void, GLenum target, GLsizeiptr size, const void *data, GLbitfield flags) { (void)flags; buf_storage(bound_buf(target), "glBufferStorage", size, data); }
+GLB(glBufferSubData, void, GLenum target, GLintptr off, GLsizeiptr size, const void *data) { buf_subdata(bound_buf(target), "glBufferSubData", off, size, data); }
+GLB(glMapBufferRange, void *, GLenum target, GLintptr off, GLsizeiptr len, GLbitfield access) { return buf_map(bound_buf(target), "glMapBufferRange", off, len, access); }
 GL(glUnmapBuffer, uint32_t, GLenum target) { (void)target; return 1; }
 GL(glFlushMappedBufferRange, void, GLenum target, GLintptr off, GLsizeiptr len) { (void)target; (void)off; (void)len; }   // shared memory: nothing to flush
+GL(glCreateBuffers, void, GLsizei n, GLuint *out) { for (GLsizei i = 0; i < n; i++) out[i] = name_new((void ***)&g_bufs, &g_nbufs, &g_capbufs, sizeof(buf_t)); }
+GLB(glNamedBufferData, void, GLuint b, GLsizeiptr size, const void *data, GLenum usage) { (void)usage; buf_data(buf_of(b), "glNamedBufferData", size, data); }
+GLB(glNamedBufferStorage, void, GLuint b, GLsizeiptr size, const void *data, GLbitfield flags) { (void)flags; buf_storage(buf_of(b), "glNamedBufferStorage", size, data); }
+GLB(glNamedBufferSubData, void, GLuint b, GLintptr off, GLsizeiptr size, const void *data) { buf_subdata(buf_of(b), "glNamedBufferSubData", off, size, data); }
+GLB(glMapNamedBufferRange, void *, GLuint b, GLintptr off, GLsizeiptr len, GLbitfield access) { return buf_map(buf_of(b), "glMapNamedBufferRange", off, len, access); }
+GL(glUnmapNamedBuffer, uint32_t, GLuint b) { (void)b; return 1; }
+GL(glFlushMappedNamedBufferRange, void, GLuint b, GLintptr off, GLsizeiptr len) { (void)b; (void)off; (void)len; }
 
 // ---------- Sync objects ----------
 // A fence is the serial of the command buffer being recorded when it was made, signalled when that command buffer completes (g_ev). LÖVE fences each third of its stream
 // buffers at the end of a frame and waits for the fence three frames later, before it writes that third again
 typedef struct { uint64_t serial; } sync_t;
 GL(glFenceSync, void *, GLenum cond, GLbitfield flags) { (void)cond; (void)flags; sync_t *s = zalloc(sizeof *s); s->serial = g_serial; return s; }
+GL(glIsSync, uint32_t, void *s) { return s != NULL; }   // a sync object is any non-null pointer glFenceSync returned and glDeleteSync has not freed
 GL(glDeleteSync, void, void *s) { free(s); }
 GL(glWaitSync, void, void *s, GLbitfield flags, uint64_t timeout) { (void)s; (void)flags; (void)timeout; }   // a GPU-side wait: the command buffers run in order
 GLB(glClientWaitSync, GLenum, void *sy, GLbitfield flags, uint64_t timeout_ns) {
@@ -1348,9 +1379,16 @@ GL(glTexParameterfv, void, GLenum target, GLenum p, const GLfloat *v) {
 }
 // glTexImage2D and glTexSubImage2D take nine arguments, the last on the stack, which the big-stack entry does not carry: they pack them here, on the game's stack, and enter there
 typedef struct { GLenum target; GLint level, ifmt, x, y; GLsizei w, h; GLenum format, type; const void *pixels; GLsizei size; int sub, compressed; } teximg_args;
+// With a pixel unpack buffer bound, an upload's pointer is an offset into it (the buffer is shared memory: its bytes are read where they are)
+static const void *unpack_src(const void *p) {
+    if (!S.unpack_buf) return p;
+    buf_t *b = buf_of(S.unpack_buf); if (!b || !b->mb || (uintptr_t)p >= b->size) { RED1("texture upload from pixel unpack buffer %u at %p: outside it", S.unpack_buf, p); return NULL; }
+    return (const uint8_t *)b->mb.contents + (uintptr_t)p;
+}
 static void teximg_impl(const teximg_args *a) __attribute__((used));
 BIGSTUB(teximg_impl);
-static void teximg_impl(const teximg_args *a) {
+static void teximg_impl(const teximg_args *a0) {
+    teximg_args a1 = *a0; a1.pixels = unpack_src(a0->pixels); const teximg_args *a = &a1;
     @autoreleasepool {
         if (a->sub) {
             tex_t *t = bound_tex(a->target);
@@ -1359,6 +1397,8 @@ static void teximg_impl(const teximg_args *a) {
             int f = t->fmt, cv = CV_COPY;   // the data is converted to the texture's format
             if (f == F_RGBA8) cv = a->type == GL_UNSIGNED_SHORT_5_6_5 ? CV_565 : a->type == GL_UNSIGNED_SHORT_4_4_4_4 ? CV_4444 : a->type == GL_UNSIGNED_SHORT_5_5_5_1 ? CV_5551 :
                                    a->format == GL_RGB ? CV_RGB8 : a->format == GL_COLOR_INDEX ? CV_INDEX : CV_COPY;
+            // BGRA bytes into an RGBA texture (30XX: glTexStorage2D(RGBA8), then glTexSubImage2D(BGRA)), or RGBA into one made from BGRA data: red and blue swapped on the way
+            if (a->type == GL_UNSIGNED_BYTE && (((f == F_RGBA8 || f == F_SRGBA8) && a->format == GL_BGRA) || (f == F_BGRA8 && a->format == GL_RGBA))) cv = CV_SWAP_RB;
             size_t pitch; void *conv = pixels_convert(a->pixels, a->w, a->h, a->format, a->type, f, cv, &pitch);
             if (!t->made) {   // into a level not made yet: patch the pending copy
                 level_t *l = &t->pend[face][a->level < MAXLV ? a->level : 0];
@@ -1389,6 +1429,9 @@ GL(glTexImage2D, void, GLenum target, GLint level, GLint ifmt, GLsizei w, GLsize
 GL(glTexSubImage2D, void, GLenum target, GLint level, GLint x, GLint y, GLsizei w, GLsizei h, GLenum format, GLenum type, const void *pixels) {
     teximg_args a = {target, level, 0, x, y, w, h, format, type, pixels, 0, 1, 0}; ((void (*)(const teximg_args *))(const void *)teximg_impl_bs)(&a);
 }
+GL(glCompressedTexSubImage2D, void, GLenum target, GLint level, GLint x, GLint y, GLsizei w, GLsizei h, GLenum format, GLsizei size, const void *data) {   // blocks copied as they are, as glCompressedTexImage2D's
+    (void)format; (void)size; teximg_args a = {target, level, 0, x, y, w, h, 0, 0, data, size, 1, 1}; ((void (*)(const teximg_args *))(const void *)teximg_impl_bs)(&a);
+}
 GL(glCompressedTexImage2D, void, GLenum target, GLint level, GLenum ifmt, GLsizei w, GLsizei h, GLint border, GLsizei size, const void *data) {
     (void)border; teximg_args a = {target, level, (GLint)ifmt, 0, 0, w, h, 0, 0, data, size, 0, 1}; ((void (*)(const teximg_args *))(const void *)teximg_impl_bs)(&a);
 }
@@ -1408,7 +1451,8 @@ GL(glTexStorage3D, void, GLenum target, GLsizei levels, GLenum ifmt, GLsizei w, 
 typedef struct { GLenum target; GLint level, x, y, z; GLsizei w, h, d; GLenum format, type; const void *pixels; } tex3d_args;
 static void tex3d_impl(const tex3d_args *a) __attribute__((used));
 BIGSTUB(tex3d_impl);
-static void tex3d_impl(const tex3d_args *a) {
+static void tex3d_impl(const tex3d_args *a0) {
+    tex3d_args a1 = *a0; a1.pixels = unpack_src(a0->pixels); const tex3d_args *a = &a1;
     @autoreleasepool {
         tex_t *t = bound_tex(a->target);
         if (!t || t->fmt < 0 || a->w <= 0 || a->h <= 0 || a->d <= 0 || !a->pixels) return;
@@ -1852,12 +1896,21 @@ EGL(eglGetDisplay, EGLDisplay, void *native) { (void)native; dev_init(); return 
 EGL(eglInitialize, EGLBoolean, EGLDisplay d, EGLint *major, EGLint *minor) { (void)d; dev_init(); g_egl.init = 1; if (major) *major = 1; if (minor) *minor = 5; return EGL_TRUE; }
 EGL(eglTerminate, EGLBoolean, EGLDisplay d) { (void)d; return EGL_TRUE; }
 EGL(eglReleaseThread, EGLBoolean, void) { return EGL_TRUE; }
-// SDL binds 0 (its API before it has chosen one) when it makes the window again (Balatro's love.window.setMode): nothing to change
-EGL(eglBindAPI, EGLBoolean, EGLenum api) { if (api && api != 0x30a2) RED1("eglBindAPI(%#x): only desktop OpenGL (0x30a2) is implemented", api); return EGL_TRUE; }
-// One configuration: RGBA8, depth 24 (32F here), stencil 8, a window surface, desktop OpenGL; it matches the game's attributes
+// SDL binds 0 (its API before it has chosen one) when it makes the window again (Balatro's love.window.setMode): nothing to change. OpenGL ES runs on the same layer (g_egl_es)
+EGL(eglBindAPI, EGLBoolean, EGLenum api) {
+    if (api == 0x30a0 || api == 0x30a2) { if (g_egl_es != (api == 0x30a0)) GLOG("EGL API: %s", api == 0x30a0 ? "OpenGL ES" : "OpenGL"); g_egl_es = api == 0x30a0; }
+    else if (api) { RED1("eglBindAPI(%#x): only OpenGL (0x30a2) and OpenGL ES (0x30a0) are implemented", api); return 0; }
+    return EGL_TRUE;
+}
+// One configuration: RGBA8, depth 24 (32F here), stencil 8, a window surface, OpenGL and OpenGL ES 2 / 3; it matches the game's attributes
 EGL(eglChooseConfig, EGLBoolean, EGLDisplay d, const EGLint *attr, EGLConfig *cfg, EGLint n, EGLint *num) {
     (void)d; (void)attr;
     if (cfg && n > 0) cfg[0] = (EGLConfig)(uintptr_t)1;
+    if (num) *num = 1;
+    return EGL_TRUE;
+}
+EGL(eglGetConfigs, EGLBoolean, EGLDisplay d, EGLConfig *cfg, EGLint n, EGLint *num) {   // the same one configuration
+    (void)d; if (cfg && n > 0) cfg[0] = (EGLConfig)(uintptr_t)1;
     if (num) *num = 1;
     return EGL_TRUE;
 }
@@ -1873,7 +1926,7 @@ EGL(eglGetConfigAttrib, EGLBoolean, EGLDisplay d, EGLConfig cfg, EGLint attr, EG
         case 0x3031: case 0x3032: *v = 0; break;   // SAMPLES, SAMPLE_BUFFERS
         case 0x302e: *v = 0; break;   // NATIVE_VISUAL_ID
         case 0x3033: *v = 0x5; break;   // SURFACE_TYPE: PBUFFER | WINDOW
-        case 0x3040: case 0x3042: *v = 0x8; break;   // RENDERABLE_TYPE, CONFORMANT: OPENGL_BIT
+        case 0x3040: case 0x3042: *v = 0x4d; break;   // RENDERABLE_TYPE, CONFORMANT: OPENGL_BIT | OPENGL_ES_BIT | OPENGL_ES2_BIT | OPENGL_ES3_BIT
         case 0x3027: *v = 0x3038; break;   // CONFIG_CAVEAT: NONE
         default: RED1("eglGetConfigAttrib(%#x) not implemented (0)", attr); *v = 0; break;
     }
@@ -1881,11 +1934,11 @@ EGL(eglGetConfigAttrib, EGLBoolean, EGLDisplay d, EGLConfig cfg, EGLint attr, EG
 }
 EGL(eglQueryString, const char *, EGLDisplay d, EGLint name) {
     (void)d;
-    switch (name) { case 0x3053: return "NVIDIA"; case 0x3054: return "1.5"; case 0x3055: return "EGL_KHR_create_context"; case 0x308d: return "OpenGL"; }   // VENDOR, VERSION, EXTENSIONS, CLIENT_APIS
+    switch (name) { case 0x3053: return "NVIDIA"; case 0x3054: return "1.5"; case 0x3055: return "EGL_KHR_create_context"; case 0x308d: return "OpenGL OpenGL_ES"; }   // VENDOR, VERSION, EXTENSIONS, CLIENT_APIS
     return NULL;
 }
 EGL(eglGetError, EGLint, void) { return 0x3000; }   // SUCCESS
-EGL(eglQueryAPI, EGLenum, void) { return 0x30a2; }   // OPENGL_API
+EGL(eglQueryAPI, EGLenum, void) { return g_egl_es ? 0x30a0 : 0x30a2; }   // OPENGL_ES_API / OPENGL_API
 EGL(eglWaitNative, EGLBoolean, EGLint engine) { (void)engine; return EGL_TRUE; }
 EGL(eglWaitGL, EGLBoolean, void) { return EGL_TRUE; }
 EGL(eglDestroyContext, EGLBoolean, EGLDisplay d, EGLContext c) { (void)d; (void)c; return EGL_TRUE; }
@@ -1894,7 +1947,7 @@ EGL(eglCreateContext, EGLContext, EGLDisplay d, EGLConfig cfg, EGLContext share,
     (void)d; (void)cfg;
     int major = 0, minor = 0; for (int i = 0; attr && attr[i] != 0x3038 && i < 32; i += 2) { if (attr[i] == 0x3098) major = attr[i + 1]; else if (attr[i] == 0x30fb) minor = attr[i + 1]; }
     if (share) RED1("shared EGL contexts are not implemented (one context)");
-    GLOG("EGL context: OpenGL %d.%d", major, minor);
+    GLOG("EGL context: OpenGL%s %d.%d", g_egl_es ? " ES" : "", major, minor);
     return (EGLContext)(uintptr_t)2;
 }
 EGL(eglCreateWindowSurface, EGLSurface, EGLDisplay d, EGLConfig cfg, void *win, const EGLint *attr) {
@@ -1907,6 +1960,22 @@ EGL(eglCreateWindowSurface, EGLSurface, EGLDisplay d, EGLConfig cfg, void *win, 
     return (EGLSurface)(uintptr_t)3;
 }
 EGL(eglDestroySurface, EGLBoolean, EGLDisplay d, EGLSurface s) { (void)d; (void)s; return EGL_TRUE; }
+// The window surface's size (30XX sizes its render targets by it); the other attributes as a window surface without multisampling or a swap rect reports them
+EGL(eglQuerySurface, EGLBoolean, EGLDisplay d, EGLSurface s, EGLint attr, EGLint *v) {
+    (void)d; (void)s; if (!v) return 0;
+    int w = (int)g_win.w, h = (int)g_win.h; if (!g_win.made) { dm_vi_layer_size(&w, &h); if (w <= 0 || h <= 0) { w = 1280; h = 720; } }
+    switch (attr) {
+        case 0x3057: *v = w; break;   // WIDTH
+        case 0x3056: *v = h; break;   // HEIGHT
+        case 0x3028: *v = 1; break;   // CONFIG_ID
+        case 0x3086: *v = 0x3084; break;   // RENDER_BUFFER: BACK_BUFFER
+        case 0x3093: *v = 0x3094; break;   // SWAP_BEHAVIOR: BUFFER_DESTROYED
+        case 0x3099: *v = 0x309b; break;   // MULTISAMPLE_RESOLVE: DEFAULT
+        case 0x3090: case 0x3091: case 0x3092: *v = -1; break;   // HORIZONTAL_RESOLUTION, VERTICAL_RESOLUTION, PIXEL_ASPECT_RATIO: unknown
+        default: RED1("eglQuerySurface(%#x) not implemented (0)", attr); *v = 0; break;
+    }
+    return EGL_TRUE;
+}
 EGL(eglMakeCurrent, EGLBoolean, EGLDisplay d, EGLSurface dr, EGLSurface rd, EGLContext c) {
     (void)d; (void)rd;
     static pthread_t th; static int known, sized;

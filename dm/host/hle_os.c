@@ -148,9 +148,11 @@ static void *(*g_sa_alloc)(void *, size_t), *(*g_sa_alloc_al)(void *, size_t, si
 static int g_sa_big_align;
 static pthread_once_t g_sa_once = PTHREAD_ONCE_INIT;
 static void sa_init(void) {
-    module_t *ms = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) ms = &g_mod[i];
-    g_sa_alloc = ms ? module_sym(ms, "_ZN2nn3mem17StandardAllocator8AllocateEm") : NULL;
-    g_sa_alloc_al = ms ? module_sym(ms, "_ZN2nn3mem17StandardAllocator8AllocateEmm") : NULL;
+    module_t *ms[16]; int nms = dm_sdk_modules(ms, 16);   // sdk, else the subsdk module that defines it (30XX)
+    for (int i = 0; i < nms && !(g_sa_alloc && g_sa_alloc_al); i++) {
+        g_sa_alloc = module_sym(ms[i], "_ZN2nn3mem17StandardAllocator8AllocateEm");
+        g_sa_alloc_al = module_sym(ms[i], "_ZN2nn3mem17StandardAllocator8AllocateEmm");
+    }
     if (!g_sa_alloc || !g_sa_alloc_al) die("StandardAllocator::Allocate not found in the SDK");
     g_sa_big_align = DM_GAME_ALLOC_BIG_ALIGN;
     if (g_sa_big_align) LOG("StandardAllocator::Allocate: allocations ≥ 64 KB are 64 KB aligned (game profile alloc_big_align: memory pool storage, see hle_os.c)");

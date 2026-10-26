@@ -728,6 +728,41 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 - Batched quads share one 16-bit index buffer through `glDrawElementsBaseVertex`; canvases bind GL_FRAMEBUFFER (read and draw), check completeness, discard depth and stencil after use (`glInvalidateFramebuffer`) and clear with `glClearBufferfv`. `glBlitFramebuffer` (colour, same size) and `glReadPixels` (RGBA8) are there for multisample resolves and `Canvas:newImageData`, which the game does not use.
 - **Found on:** [Balatro](../../dm/games/0100CD801CE5E000/README.md).
 
+### OpenGL ES configurations probed before a desktop context
+
+- **Symptom:** `[RED] eglBindAPI(0x30a0): only desktop OpenGL (0x30a2) is implemented`, then `UNIMPL eglGetConfigs` and a `Break` in the game's renderer setup.
+- **Cause:** the game binds OpenGL ES and lists the EGL configurations first, then binds desktop OpenGL and makes a 4.5 context; it also asks the window surface's size with `eglQuerySurface`.
+- **Fix:** `eglBindAPI` takes OpenGL ES as well as OpenGL (one layer: NVIDIA's driver serves both; an ES context reads back ES version strings), the one configuration reports the ES 2 and ES 3 renderable bits, and `eglGetConfigs` and `eglQuerySurface` answer (`hle_gl.m`).
+- **Found on:** [30XX](../../dm/games/010059B017F9E000/README.md).
+
+### GL 4.5 direct state access buffers
+
+- **Symptom:** with `DM_GL_STUBS=1`, `glCreateBuffers`, `glNamedBufferStorage` and `glMapNamedBufferRange called: not implemented`, then a crash writing through the null mapping.
+- **Cause:** the game makes and fills its buffers by name (GL 4.5 direct state access), not through a binding; it also streams texture data through a pixel unpack buffer and calls `glDepthRangef`, `glGetBooleanv`, `glFlush`, `glIsSync` and `glCompressedTexSubImage2D`.
+- **Fix:** the buffer operations take a buffer object, reached through its binding or its name (`buf_data`, `buf_storage`, `buf_subdata`, `buf_map`), so `glCreateBuffers` and the `glNamedBuffer*` calls share the bound forms' orphaning and mapping; `GL_PIXEL_UNPACK_BUFFER` turns an upload's pointer into an offset in that buffer (`unpack_src`); the depth range goes to the Metal viewport's near and far; compressed sub-images copy their blocks as `glCompressedTexImage2D` does.
+- **Found on:** [30XX](../../dm/games/010059B017F9E000/README.md).
+
+### Desktop GLSL older than 1.40
+
+- **Symptom:** `gl_shaders.py`: `#version: Desktop shaders for Vulkan SPIR-V require version 140 or higher`, and `'highp' : overloaded functions must have the same parameter precision qualifiers` on a function of the shader's own; after that, `metal compile failed: reference to 'bias' is ambiguous`.
+- **Cause:** glslang makes SPIR-V only from GLSL 1.40 on. The game's shaders are `#version 120` (`attribute`, `varying`, `gl_FragColor`, `texture2D`) and define functions that later versions made built in (`trunc`); one defines `bias`, a name spirv-cross keeps and Metal's `metal::bias` makes ambiguous.
+- **Fix:** `gl_shaders.py` raises desktop GLSL older than 1.40 to 3.30 on the preprocessed text (`upgrade_old`: `attribute` / `varying` as `in` / `out`, `gl_FragColor` and `gl_FragData[n]` as outputs at their locations, the shader's own functions named as newer built-ins renamed), and renames a shader's own function named as a Metal sampling argument type (`METAL_CLASH`) in every shader.
+- **Found on:** [30XX](../../dm/games/010059B017F9E000/README.md): 55 shaders, all `#version 120`.
+
+### Every declared sampler bound to slot 0
+
+- **Symptom:** the scene renders black, or as one default texture, while text and other draws that sample one texture look right; offscreen targets hold alpha but no colour.
+- **Cause:** glslang's `--amb` numbers only the samplers a shader uses; the others it declares keep binding 0, and the reflection lists them all. The table had a row for each, so the host bound every sampler's texture to Metal slot 0 in turn and the last (a default texture) won.
+- **Fix:** `gl_shaders.py` writes a `t:` row only for a sampler the Metal entry point takes (its `[[texture(n)]]` arguments); an unused sampler is inactive, as GL reports it (location −1).
+- **Found on:** [30XX](../../dm/games/010059B017F9E000/README.md): every shader declares the same 14 samplers and samples one to three; the title showed only its menu text over black.
+
+### BGRA sub-images into an RGBA texture
+
+- **Symptom:** red and blue swapped across the scene (blue sky drawn orange, red rock blue), and palette-indexed sprites drawn as scattered pixels: most of the player's figure missing, the rest in the wrong colours.
+- **Cause:** the game makes its atlases and palettes with `glTexStorage2D(GL_RGBA8)` and fills them with `glTexSubImage2D(…, GL_BGRA, GL_UNSIGNED_BYTE)` from a pixel unpack buffer. The sub-image path copied the bytes as they were. Its palette shader reads a colour index from the atlas's red channel, which then held blue, and looked up mostly unused, transparent palette entries.
+- **Fix:** a sub-image whose byte order differs from the texture's (BGRA into RGBA8 or SRGB8_ALPHA8, RGBA into BGRA8) swaps red and blue on upload (`CV_SWAP_RB` in `hle_gl.m`). `glTexImage2D` with BGRA data already made a BGRA8 texture.
+- **Found on:** [30XX](../../dm/games/010059B017F9E000/README.md): the player character (Ace) in the first level; every sprite atlas, palette and background in the game goes through this path.
+
 ### GL orientation through the lower-left origin
 
 - The layer renders as GL does, bottom row first, through the NVN layer's lower-left origin (`mtl_set_origin_lower_left`): flipped viewports, reversed winding, a flipped present. Scissor rectangles and `gl_FragCoord` need no change, and render targets read back with GL's texture coordinates.
