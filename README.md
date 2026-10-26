@@ -164,6 +164,8 @@ python3 -m pip install lz4 capstone fonttools "backports.zstd; python_version < 
 
 NSZ and XCZ files (compressed NSPs and XCIs) work too: the script converts them once with [nsz](https://github.com/nicoboss/nsz) (`python3 -m pip install nsz`) and keeps the NSPs in `<title ID>_build/nsp/`, which takes their full size on disk.
 
+If your library is on an [Aerofoil](https://github.com/luketanti/aerofoil) server, `scripts/aerofoil.py` makes this folder for you: `python3 scripts/aerofoil.py wonder` searches the server, asks which match you mean, and downloads the base game, its newest update and its DLC into `<library>/<name> [<title ID>]/`. Add `--build` to run step 3 straight after. The first run asks for the server, your user, your password (kept in the macOS Keychain) and the library folder; `-h` lists the options.
+
 Any version works, with or without an update: the script packs the newest version in the folder. DLC is optional too: the DLC in the folder is packed, and without it the game sees none, as on a Switch without it. Each game was tested on one version (an update named in the table above is the one its 60 fps needs). With another version the script builds the game with that version's own shaders and says that the version was not tested; fixes made for the tested version's code, such as the 60 fps ones, don't apply to it.
 
 **3. Run the script:**
